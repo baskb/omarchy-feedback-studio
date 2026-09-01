@@ -8,6 +8,8 @@ when you say **PPF** (Please Process Feedback).
 
 This plugin puts it in the **Omarchy bar**:
 
+![The Feedback Studio panel in the Omarchy bar: a session with its counts, a QR code for the phone, and launch buttons](preview.png)
+
 - **One icon, one number.** The icon lights up while a review server runs and
   shows how many comments are still open.
 - **Every session at a glance.** Label or project, open / resolved / total
@@ -83,7 +85,7 @@ Add to `~/.config/omarchy/extensions/omarchy-menu.jsonc`:
 | **Open a folder or .md**, or `O` | A terminal opens with a picker. Choose a project folder (a `dist/`, `build/`, `out/`… inside it is auto-detected; a folder of Markdown becomes a document review) or one `.md` file |
 | **Demo**, or `D` | The bundled sample page, in a throwaway copy |
 | **Docs** | The Feedback Studio README |
-| `omarchy-shell shell status baskb.feedback-studio` | Summary line for scripts (`refresh`, `demo`, and `pick` exist too) |
+| `omarchy-shell baskb.feedback-studio status` | Summary line for scripts (`refresh`, `demo`, and `pick` exist too) |
 
 Sessions you start elsewhere, from a terminal or from the Claude Code plugin's
 `/feedback-studio:feedback start`, show up here too. The widget reads the

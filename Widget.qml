@@ -132,7 +132,6 @@ Panel {
     function status(): string { return svc.summaryText }
     function demo(): string { root.launch("demo"); return "ok" }
     function pick(): string { root.launch("pick"); return "ok" }
-    function qr(pid: string): string { root.open(); svc.showQr(parseInt(pid, 10) || 0); return "ok" }
   }
 
   BarIconButton {
