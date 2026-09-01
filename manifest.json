@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "id": "baskb.feedback-studio",
+  "name": "Feedback Studio",
+  "version": "0.1.0",
+  "author": "Bastiaan Kortenbout",
+  "license": "MIT",
+  "homepage": "https://github.com/baskb/omarchy-feedback-studio",
+  "description": "Your running Feedback Studio review sessions in the Omarchy bar: open-comment counts, what the coding agent is doing, a QR code to review from your phone, and one-click starts for a folder, a Markdown file, or the demo.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "Widget.qml"
+  },
+  "barWidget": {
+    "displayName": "Feedback Studio",
+    "description": "Review sessions, open comments, agent activity, and a phone QR code for Feedback Studio.",
+    "category": "AI",
+    "aliases": ["feedback", "feedback-studio", "review"],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 5,
+      "notifyNewComments": true,
+      "useTunnel": false,
+      "serverCommand": "",
+      "pickRoot": ""
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 2,
+        "max": 60,
+        "step": 1,
+        "defaultValue": 5,
+        "description": "How often the widget asks each running session for its comment counts while the panel is closed. The open panel refreshes every 2 seconds."
+      },
+      {
+        "key": "notifyNewComments",
+        "type": "boolean",
+        "label": "Notify on new comments",
+        "defaultValue": true,
+        "description": "Send a desktop notification when a session receives a new comment, for example from your phone."
+      },
+      {
+        "key": "useTunnel",
+        "type": "boolean",
+        "label": "Phone-ready sessions (--tunnel)",
+        "defaultValue": false,
+        "description": "Start sessions from this widget with --tunnel: a public HTTPS URL through a Cloudflare quick tunnel, so the phone QR code works on any network. Traffic then leaves your machine."
+      },
+      {
+        "key": "serverCommand",
+        "type": "string",
+        "label": "Server command",
+        "defaultValue": "",
+        "description": "Command that runs Feedback Studio. Empty means `npx -y feedback-studio@1`. Point it at a clone to run a development version, e.g. `node ~/src/feedback-studio/plugins/feedback-studio/bin/feedback-studio.mjs`."
+      },
+      {
+        "key": "pickRoot",
+        "type": "path",
+        "label": "Picker starts in",
+        "defaultValue": "",
+        "description": "Folder the \"Open a folder or .md\" picker opens in. Empty means your home folder."
+      }
+    ]
+  }
+}

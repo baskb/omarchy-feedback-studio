@@ -1,0 +1,61 @@
+#!/bin/bash
+# Lists the Feedback Studio review servers running on this machine as JSON.
+#
+# Feedback Studio (1.0.1 and newer) registers every server it starts in
+# ~/.feedback-studio/sessions/<pid>.json for as long as it runs. This script
+# sweeps entries whose process is gone, asks each live server for its comment
+# counts and agent presence over its local API, and prints one JSON array for
+# the bar widget. stdout is always JSON; problems go to stderr, and a server
+# that does not answer is still listed, marked unreachable, rather than dropped.
+set -uo pipefail
+
+dir="${CLAUDE_PLUGIN_DATA:-$HOME/.feedback-studio}/sessions"
+[[ -d $dir ]] || { echo '[]'; exit 0; }
+
+# Echo $1 when it is valid JSON, else "null": an error page or an empty reply
+# must not break the jq call below.
+json_or_null() {
+  if [[ -n ${1:-} ]] && jq -e . >/dev/null 2>&1 <<<"$1"; then printf '%s' "$1"; else printf 'null'; fi
+}
+
+entries=()
+for f in "$dir"/*.json; do
+  [[ -f $f ]] || continue
+  pid=$(jq -r '.pid // empty' "$f" 2>/dev/null)
+  if [[ ! $pid =~ ^[0-9]+$ ]]; then rm -f -- "$f"; continue; fi
+  if ! kill -0 "$pid" 2>/dev/null; then rm -f -- "$f"; continue; fi
+
+  api=$(jq -r '.apiBase // empty' "$f")
+  key=$(jq -r '.adminKey // empty' "$f")
+  query=""
+  [[ -n $key ]] && query="?key=$key"
+  comments=""
+  agent=""
+  if [[ -n $api ]]; then
+    # -k: a --https session uses a self-signed certificate. The header says
+    # "not the agent", so this poll never shows up as agent presence on the page.
+    comments=$(curl -sS -k -m 2 -H 'X-Feedback-Agent: 0' "$api/comments$query" 2>/dev/null)
+    agent=$(curl -sS -k -m 2 -H 'X-Feedback-Agent: 0' "$api/agent-status$query" 2>/dev/null)
+  fi
+
+  entry=$(jq -c \
+    --argjson comments "$(json_or_null "$comments")" \
+    --argjson agent "$(json_or_null "$agent")" '
+    ($comments.comments // []) as $c
+    | {
+        pid, port, label, mode, served, cwd, dataDir, url, phoneUrl, tunnel, share, startedAt,
+        project: ((.cwd // "") | split("/") | map(select(. != "")) | last // ""),
+        reachable: ($comments != null),
+        total: ($c | length),
+        open: ([$c[] | select(.status == "open" or .status == "approved")] | length),
+        resolved: ([$c[] | select(.status == "resolved")] | length),
+        agent: ($agent.agent // null)
+      }' "$f" 2>/dev/null) || { echo "fbs-sessions: could not read $f" >&2; continue; }
+  entries+=("$entry")
+done
+
+if (( ${#entries[@]} == 0 )); then
+  echo '[]'
+  exit 0
+fi
+printf '%s\n' "${entries[@]}" | jq -s 'sort_by(.startedAt // "")'

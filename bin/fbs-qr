@@ -1,0 +1,20 @@
+#!/bin/bash
+# Prints a QR code for $1 as a square 0/1 matrix, one row per line, the same
+# shape the shell's Wi-Fi share card consumes (see omarchy-network-qr). The
+# widget draws each 1 as a dark square on a white canvas. Margin 4 is the QR
+# spec's quiet zone, so a scanner gets a clean border whatever the theme.
+set -euo pipefail
+
+text=${1:-}
+[[ -n $text ]] || { echo "usage: fbs-qr <text>" >&2; exit 1; }
+command -v qrencode >/dev/null 2>&1 || { echo "qrencode is not installed" >&2; exit 1; }
+
+# ASCII output uses two characters per module; collapse each pair to one digit.
+ascii=$(printf '%s' "$text" | qrencode --type ASCII --margin 4 --output -)
+while IFS= read -r line; do
+  row=
+  for ((column = 0; column < ${#line}; column += 2)); do
+    [[ ${line:column:2} == *#* ]] && row+=1 || row+=0
+  done
+  printf '%s\n' "$row"
+done <<<"$ascii"

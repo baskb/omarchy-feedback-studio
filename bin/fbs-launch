@@ -1,0 +1,137 @@
+#!/bin/bash
+# Starts a Feedback Studio review server in its own terminal window.
+#
+#   fbs-launch [options] demo                  the bundled sample page
+#   fbs-launch [options] pick                  choose a project folder or a .md file
+#   fbs-launch [options] path <folder|file.md> review that folder or file
+#
+# Options (the widget passes them from its settings):
+#   --tunnel            add --tunnel: a public HTTPS URL, so the phone QR works anywhere
+#   --command "<cmd>"   command that runs Feedback Studio; default: npx -y feedback-studio@1
+#   --root <folder>     folder the picker starts in; default: $HOME
+#
+# The first call opens a terminal (app id org.omarchy.feedback-studio) and
+# re-runs itself inside it with --in-terminal, so the server's banner with the
+# phone URL stays visible and Ctrl+C ends the session. Feedback Studio itself
+# is not part of this plugin: it comes from npm on first use.
+set -uo pipefail
+
+self=$(realpath "${BASH_SOURCE[0]}")
+tunnel=0
+command_override=""
+pick_root=""
+in_terminal=0
+while (( $# > 0 )); do
+  case $1 in
+    --tunnel) tunnel=1; shift ;;
+    --command) command_override=${2:-}; shift 2 ;;
+    --root) pick_root=${2:-}; shift 2 ;;
+    --in-terminal) in_terminal=1; shift ;;
+    --) shift; break ;;
+    -*) echo "fbs-launch: unknown option $1" >&2; exit 2 ;;
+    *) break ;;
+  esac
+done
+mode=${1:-pick}
+target=${2:-}
+
+notify() {
+  omarchy-notification-send --app-name "Feedback Studio" -g "󰍩" "$@" 2>/dev/null \
+    || notify-send "$@" 2>/dev/null || true
+}
+
+pause() {
+  echo
+  read -rn1 -p "  Press any key to close this window." || true
+  echo
+}
+
+if (( ! in_terminal )); then
+  args=(--in-terminal)
+  (( tunnel )) && args+=(--tunnel)
+  [[ -n $command_override ]] && args+=(--command "$command_override")
+  [[ -n $pick_root ]] && args+=(--root "$pick_root")
+  exec omarchy-launch-tui --app-id=org.omarchy.feedback-studio bash "$self" "${args[@]}" "$mode" "$target"
+fi
+
+# ---- from here on we run inside the terminal window --------------------------
+
+# Node.js comes from mise on Omarchy, and a terminal spawned by the shell may
+# not have mise's PATH yet.
+if ! command -v node >/dev/null 2>&1 && command -v mise >/dev/null 2>&1; then
+  eval "$(mise env -s bash 2>/dev/null)" || true
+fi
+if ! command -v node >/dev/null 2>&1; then
+  echo
+  echo "  Feedback Studio needs Node.js 18 or newer, and none was found."
+  echo "  On Omarchy, install it with mise and try again:"
+  echo
+  echo "      mise use -g node@lts"
+  notify "Node.js is not installed" "Run: mise use -g node@lts"
+  pause
+  exit 1
+fi
+
+cmd=${command_override:-"npx -y feedback-studio@1"}
+flags=()
+(( tunnel )) && flags+=(--tunnel)
+
+case $mode in
+  demo)
+    cd "$HOME" || exit 1
+    flags+=(--demo)
+    ;;
+  pick|path)
+    if [[ $mode == pick || -z $target ]]; then
+      echo
+      echo "  Choose the project folder to review (a static build inside it is auto-detected)"
+      echo "  or a Markdown file. Use the arrow keys, Enter to choose, Esc to cancel."
+      echo
+      target=$(gum file --directory --file --all --height 20 \
+        --header "Feedback Studio: project folder or .md file" "${pick_root:-$HOME}") \
+        || { echo "  Cancelled."; sleep 1; exit 0; }
+    fi
+    target=$(realpath "$target")
+    if [[ -f $target ]]; then
+      case ${target,,} in
+        *.md|*.markdown)
+          cd "$(dirname "$target")" || exit 1
+          flags+=(--md "$(basename "$target")")
+          ;;
+        *)
+          echo "  $target is not a Markdown file or a folder."
+          pause
+          exit 1
+          ;;
+      esac
+    elif [[ -d $target ]]; then
+      cd "$target" || exit 1
+      # A folder of Markdown with no site build is a document review, not a site.
+      if ! ls -d dist build out _site public .output/public site >/dev/null 2>&1 \
+         && ls ./*.md >/dev/null 2>&1; then
+        flags+=(--md .)
+      fi
+    else
+      echo "  Not found: $target"
+      pause
+      exit 1
+    fi
+    ;;
+  *)
+    echo "usage: fbs-launch [--tunnel] [--command <cmd>] [--root <folder>] demo|pick|path <folder|file.md>" >&2
+    exit 2
+    ;;
+esac
+
+echo
+echo "  \$ $cmd ${flags[*]}"
+echo "    in $(pwd)"
+echo
+eval -- "$cmd" '"${flags[@]}"'
+status=$?
+if (( status != 0 && status != 130 )); then
+  echo
+  echo "  Feedback Studio exited with status $status."
+  pause
+fi
+exit $status
