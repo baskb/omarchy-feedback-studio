@@ -2,12 +2,14 @@
   "schemaVersion": 1,
   "id": "baskb.feedback-studio",
   "name": "Feedback Studio",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "author": "Bastiaan Kortenbout",
   "license": "MIT",
   "homepage": "https://github.com/baskb/omarchy-feedback-studio",
-  "description": "Your running Feedback Studio review sessions in the Omarchy bar: open-comment counts, what the coding agent is doing, a QR code to review from your phone, and one-click starts for a folder, a Markdown file, or the demo.",
-  "kinds": ["bar-widget"],
+  "description": "Your running Feedback Studio review sessions in the Omarchy bar: open-comment counts, what the coding agent is doing, rich notifications, a QR code to review from your phone (Tailscale or tunnel), screenshot comments, and one-click starts for a folder, a Markdown file, the focused window's project, or the demo.",
+  "kinds": [
+    "bar-widget"
+  ],
   "entryPoints": {
     "barWidget": "Widget.qml"
   },
@@ -15,13 +17,20 @@
     "displayName": "Feedback Studio",
     "description": "Review sessions, open comments, agent activity, and a phone QR code for Feedback Studio.",
     "category": "AI",
-    "aliases": ["feedback", "feedback-studio", "review"],
+    "aliases": [
+      "feedback",
+      "feedback-studio",
+      "review"
+    ],
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
       "refreshIntervalSec": 5,
       "notifyNewComments": true,
-      "useTunnel": false,
+      "notifyClick": "Open the page",
+      "notifyRoundDone": true,
+      "questionStaleMin": 10,
+      "phoneAccess": "Off",
       "serverCommand": "",
       "pickRoot": ""
     },
@@ -44,11 +53,44 @@
         "description": "Send a desktop notification when a session receives a new comment, for example from your phone."
       },
       {
-        "key": "useTunnel",
+        "key": "notifyClick",
+        "type": "enum",
+        "label": "Clicking a comment notification",
+        "options": [
+          "Open the page",
+          "Send to Claude Code"
+        ],
+        "defaultValue": "Open the page",
+        "description": "What a click on a new-comment toast does: open the review page in the browser, or open Claude Code in the project and ask it to process the feedback (focuses the existing Claude Code window if one is already open there)."
+      },
+      {
+        "key": "notifyRoundDone",
         "type": "boolean",
-        "label": "Phone-ready sessions (--tunnel)",
-        "defaultValue": false,
-        "description": "Start sessions from this widget with --tunnel: a public HTTPS URL through a Cloudflare quick tunnel, so the phone QR code works on any network. Traffic then leaves your machine."
+        "label": "Notify when the agent finishes a round",
+        "defaultValue": true,
+        "description": "When a coding agent leaves a session after resolving comments, show \"Round done\" with what it applied. Click it to open the page and play the walk-through."
+      },
+      {
+        "key": "questionStaleMin",
+        "type": "integer",
+        "label": "Unanswered question after (minutes)",
+        "min": 0,
+        "max": 240,
+        "step": 5,
+        "defaultValue": 10,
+        "description": "A question pin that no agent has answered for this long turns the badge urgent and sends one notification whose click starts Claude Code in watch mode. 0 turns this off."
+      },
+      {
+        "key": "phoneAccess",
+        "type": "enum",
+        "label": "Phone access for new sessions",
+        "options": [
+          "Off",
+          "Tailscale",
+          "Tunnel"
+        ],
+        "defaultValue": "Off",
+        "description": "Off: sessions started here stay on this computer. Tailscale: reachable from a phone on your tailnet, private, with a real certificate on Feedback Studio 1.4+ (older servers get --https --host 0.0.0.0 and a one-time certificate warning). Tunnel: a public HTTPS URL through a Cloudflare quick tunnel; works on any network, traffic leaves your machine."
       },
       {
         "key": "serverCommand",

@@ -1,0 +1,59 @@
+#!/bin/bash
+# Hands a review session to Claude Code.
+#
+#   fbs-process <pid> [process|watch]
+#
+# <pid> is the Feedback Studio server (its registry file names the project
+# folder). If Claude Code already runs in that folder, its terminal window is
+# focused and a notification says what to type; nothing is launched twice.
+# Otherwise a terminal opens in the project running Claude Code with the
+# prompt for the mode: "process" asks it to work through the open comments
+# (PPF), "watch" asks it to go live on the session and stay.
+set -uo pipefail
+
+pid=${1:-}
+mode=${2:-process}
+[[ $pid =~ ^[0-9]+$ ]] || { echo "usage: fbs-process <pid> [process|watch]" >&2; exit 2; }
+
+notify() {
+  omarchy-notification-send --app-name "Feedback Studio" -g "󰍩" "$@" 2>/dev/null \
+    || notify-send "$@" 2>/dev/null || true
+}
+
+registry="${CLAUDE_PLUGIN_DATA:-$HOME/.feedback-studio}/sessions/$pid.json"
+[[ -f $registry ]] || { notify "That review session is gone" "Start a new one from the bar."; exit 1; }
+cwd=$(jq -r '.cwd // empty' "$registry")
+[[ -d $cwd ]] || { notify "Project folder not found" "$cwd"; exit 1; }
+project=$(basename -- "$cwd")
+
+case $mode in
+  watch) prompt="Watch the feedback: go live on the Feedback Studio session running in this project, answer question pins as they come, apply auto comments, and stay until I say stop." ;;
+  *) prompt="Please process feedback" ;;
+esac
+
+# Find the window of a Claude Code process already running in this folder:
+# walk from that process up through its parents until one of them owns a
+# Hyprland client, then focus it.
+window_pids=$(hyprctl clients -j 2>/dev/null | jq -r '.[].pid' 2>/dev/null)
+for p in $(pgrep -x claude 2>/dev/null); do
+  [[ $(readlink "/proc/$p/cwd" 2>/dev/null) == "$cwd" ]] || continue
+  q=$p
+  for _ in $(seq 1 12); do
+    if grep -q -x -- "$q" <<<"$window_pids"; then
+      hyprctl dispatch focuswindow "pid:$q" >/dev/null 2>&1
+      if [[ $mode == watch ]]; then
+        notify "Claude Code is already open in $project" "Tell it: watch the feedback"
+      else
+        notify "Claude Code is already open in $project" "Tell it: PPF (please process feedback)"
+      fi
+      exit 0
+    fi
+    q=$(awk '/^PPid:/ {print $2}' "/proc/$q/status" 2>/dev/null) || break
+    [[ -n $q && $q != 1 && $q != 0 ]] || break
+  done
+done
+
+# No terminal spawned by the shell has mise's PATH yet; claude lives there on
+# some setups.
+run='cd "$1" || exit 1; command -v claude >/dev/null 2>&1 || eval "$(mise env -s bash 2>/dev/null)"; if ! command -v claude >/dev/null 2>&1; then echo; echo "  Claude Code is not installed (no \"claude\" on PATH)."; read -rn1 -p "  Press any key to close." ; exit 1; fi; exec claude "$2"'
+exec omarchy-launch-tui --app-id=org.omarchy.feedback-studio-claude bash -c "$run" _ "$cwd" "$prompt"

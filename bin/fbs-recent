@@ -1,0 +1,49 @@
+#!/bin/bash
+# The widget's recent-projects list: the last five folders or Markdown files
+# reviewed through the widget, so a review restarts with one click after a
+# reboot (the session registry only knows about servers that are running now).
+#
+#   fbs-recent list                       print the list as JSON, newest first
+#   fbs-recent add <path> [folder|md]     move <path> to the top (kind guessed)
+#   fbs-recent forget <path>              drop one entry
+#
+# Stored in $XDG_STATE_HOME/feedback-studio-widget/recent.json.
+set -uo pipefail
+
+file="${XDG_STATE_HOME:-$HOME/.local/state}/feedback-studio-widget/recent.json"
+keep=5
+
+read_list() {
+  if [[ -f $file ]] && jq -e 'type == "array"' "$file" >/dev/null 2>&1; then cat "$file"; else echo '[]'; fi
+}
+
+case ${1:-list} in
+  list)
+    read_list | jq -c '[.[] | select(.path != null)] | .[:'"$keep"']'
+    ;;
+  add)
+    path=${2:-}
+    [[ -n $path ]] || { echo "usage: fbs-recent add <path> [folder|md]" >&2; exit 2; }
+    path=$(realpath -m -- "$path")
+    kind=${3:-}
+    if [[ -z $kind ]]; then
+      case ${path,,} in *.md|*.markdown) kind=md ;; *) kind=folder ;; esac
+    fi
+    name=$(basename -- "$path")
+    mkdir -p "$(dirname "$file")" || exit 1
+    tmp=$(mktemp "$file.XXXXXX") || exit 1
+    read_list | jq -c --arg path "$path" --arg kind "$kind" --arg name "$name" --argjson at "$(date +%s)" \
+      '[{path: $path, kind: $kind, name: $name, at: $at}] + [.[] | select(.path != $path)] | .[:'"$keep"']' >"$tmp" \
+      && mv -f -- "$tmp" "$file" || { rm -f -- "$tmp"; exit 1; }
+    ;;
+  forget)
+    path=$(realpath -m -- "${2:-}")
+    [[ -f $file ]] || exit 0
+    tmp=$(mktemp "$file.XXXXXX") || exit 1
+    read_list | jq -c --arg path "$path" '[.[] | select(.path != $path)]' >"$tmp" && mv -f -- "$tmp" "$file" || rm -f -- "$tmp"
+    ;;
+  *)
+    echo "usage: fbs-recent list | add <path> [folder|md] | forget <path>" >&2
+    exit 2
+    ;;
+esac

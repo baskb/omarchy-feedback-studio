@@ -1,0 +1,95 @@
+#!/bin/bash
+# Reviews whatever is in front of you: the project the focused terminal is in.
+#
+#   fbs-here [launch options...]    start Feedback Studio on the working
+#                                   directory of the shell in the focused window
+#   fbs-here --print-cwd <pid>      debug: print the working directory this
+#                                   script would find below process <pid>
+#
+# Launch options go to fbs-launch as they are (--tunnel, --tailscale,
+# --command "<cmd>", --root <folder>, ...), so the widget can pass its settings.
+#
+# Hyprland knows the focused window and its pid, but not where the shell in it
+# is. The shell is somewhere below that pid (foot -> bash -> claude -> bash),
+# so this walks the process tree under it, depth-first with the newest child
+# last, and takes the working directory of the deepest process that has a
+# readable one, preferring one inside $HOME over /, /usr, or a temp folder a
+# tool cd'd into. When the focused window is not a terminal, or nothing below
+# it has a readable working directory, it falls back to fbs-launch's picker and
+# says so in a notification, so a press of the hotkey never goes unanswered.
+set -uo pipefail
+
+self=$(realpath "${BASH_SOURCE[0]}")
+launch="$(dirname "$self")/fbs-launch"
+
+notify() {
+  omarchy-notification-send --app-name "Feedback Studio" -g "󰍩" "$@" 2>/dev/null \
+    || notify-send "$@" 2>/dev/null || true
+}
+
+# The walk keeps its best candidate in these three: a cwd inside $HOME beats
+# one outside it, and among equals the deepest process wins, with a later
+# (newer) sibling beating an earlier one at the same depth.
+best_cwd=""
+best_depth=-1
+best_home=0
+
+walk() {
+  local pid=$1 depth=$2 cwd home=0 child
+  if cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) && [[ -n $cwd && -d $cwd ]]; then
+    [[ $cwd == "$HOME" || $cwd == "$HOME"/* ]] && home=1
+    if (( home > best_home )) || (( home == best_home && depth >= best_depth )); then
+      best_cwd=$cwd
+      best_depth=$depth
+      best_home=$home
+    fi
+  fi
+  for child in $(pgrep -P "$pid" | sort -n); do
+    walk "$child" $(( depth + 1 ))
+  done
+}
+
+# Prints the working directory found below pid $1, or nothing (status 1).
+cwd_under() {
+  best_cwd="" best_depth=-1 best_home=0
+  [[ $1 =~ ^[0-9]+$ ]] && walk "$1" 0
+  [[ -n $best_cwd ]] || return 1
+  printf '%s\n' "$best_cwd"
+}
+
+if [[ ${1:-} == --print-cwd ]]; then
+  pid=${2:-}
+  [[ $pid =~ ^[0-9]+$ ]] || { echo "usage: fbs-here --print-cwd <pid>" >&2; exit 2; }
+  cwd_under "$pid" && exit 0
+  echo "fbs-here: no readable working directory below pid $pid" >&2
+  exit 1
+fi
+
+# A window is a terminal when its Wayland app id is one of the usual
+# emulators, one of the TUI windows Omarchy opens (org.omarchy.*), or when
+# the process behind it is a terminal whatever the app id says.
+is_terminal() {
+  local class=${1,,} pid=$2 comm
+  case $class in
+    foot|footclient|alacritty|kitty|com.mitchellh.ghostty|org.wezfurlong.wezterm|\
+    st|st-256color|xterm|urxvt|org.gnome.terminal|org.kde.konsole|org.omarchy.*) return 0 ;;
+  esac
+  comm=$(cat "/proc/$pid/comm" 2>/dev/null)
+  case ${comm,,} in
+    foot|footclient|alacritty|kitty|ghostty|wezterm-gui|st|xterm|urxvt) return 0 ;;
+  esac
+  return 1
+}
+
+fallback() {
+  notify -u low "No project folder under the focused window, opening the picker"
+  exec bash "$launch" "$@" pick
+}
+
+window=$(hyprctl activewindow -j 2>/dev/null) || fallback "$@"
+read -r pid class < <(jq -r '"\(.pid // 0) \(.class // "")"' <<<"$window" 2>/dev/null)
+[[ ${pid:-0} =~ ^[0-9]+$ && $pid -gt 0 ]] || fallback "$@"
+is_terminal "$class" "$pid" || fallback "$@"
+cwd=$(cwd_under "$pid") || fallback "$@"
+
+exec bash "$launch" "$@" path "$cwd"

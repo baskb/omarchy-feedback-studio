@@ -1,0 +1,216 @@
+#!/bin/bash
+# Adds a comment with a screenshot of any part of the screen to a running
+# Feedback Studio session: pick a region, type what should change, done.
+#
+#   fbs-shot <pid>                                  pick a region, ask for the text, post
+#   fbs-shot --post-only <pid> <png> <type> <text>  post an existing PNG without the
+#                                                   region picker or the prompt (tests, scripts)
+#   fbs-shot --in-terminal <pid> <png>              internal: the prompt, re-run inside a terminal
+#
+# <pid> is the server's pid, the name of its registry file in
+# ~/.feedback-studio/sessions/<pid>.json (what fbs-sessions lists). <type> is
+# fix, change, or improve.
+#
+# The overlay's own comments are pinned to an element on the page. This one is
+# for everything the overlay cannot reach: a native dialog, a second window,
+# the page as a whole. The picker is Omarchy's own (omarchy-capture-region,
+# with slurp + grim as the fallback), the text is asked in a terminal window
+# with gum, the same way fbs-launch asks for a folder, and the picture goes up
+# as the comment's screenshot after ImageMagick has shrunk it below the
+# server's 600 KB cap. Every request says X-Feedback-Agent: 0, so posting from
+# the desktop never shows up on the page as the coding agent being online.
+set -uo pipefail
+
+self=$(realpath "${BASH_SOURCE[0]}")
+dir="${CLAUDE_PLUGIN_DATA:-$HOME/.feedback-studio}/sessions"
+limit=550000   # bytes; the server refuses a PNG over 600 000
+
+# The fallback notifier knows no --exec: drop it and what follows.
+notify() {
+  local plain=() arg
+  for arg in "$@"; do
+    [[ $arg == --exec ]] && break
+    plain+=("$arg")
+  done
+  omarchy-notification-send --app-name "Feedback Studio" -g "󰍩" "$@" 2>/dev/null \
+    || notify-send "${plain[@]}" 2>/dev/null || true
+}
+
+pause() {
+  echo
+  read -rn1 -p "  Press any key to close this window." || true
+  echo
+}
+
+mode=capture
+case ${1:-} in
+  --post-only) mode=post; shift ;;
+  --in-terminal) mode=terminal; shift ;;
+  --*) echo "fbs-shot: unknown option $1" >&2; exit 2 ;;
+esac
+pid=${1:-}
+if [[ ! $pid =~ ^[0-9]+$ ]]; then
+  echo "usage: fbs-shot <pid> | fbs-shot --post-only <pid> <png> fix|change|improve <text>" >&2
+  exit 2
+fi
+
+registry="$dir/$pid.json"
+if [[ ! -f $registry ]]; then
+  echo "fbs-shot: no Feedback Studio session with pid $pid ($registry)" >&2
+  notify "No Feedback Studio session with pid $pid" "It may have been stopped."
+  exit 1
+fi
+api=$(jq -r '.apiBase // empty' "$registry")
+key=$(jq -r '.adminKey // empty' "$registry")
+url=$(jq -r '.url // empty' "$registry")
+label=$(jq -r '.label // (.cwd // "" | split("/") | map(select(. != "")) | last) // "session"' "$registry")
+if [[ -z $api ]]; then
+  echo "fbs-shot: $registry has no apiBase" >&2
+  notify "Cannot reach the session" "$registry has no apiBase"
+  exit 1
+fi
+query=""
+[[ -n $key ]] && query="?key=$key"
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/fbs-shot.XXXXXX") || exit 1
+trap 'rm -rf -- "$tmp"' EXIT
+
+# ---- steps 4-7: shrink, post the comment, upload the picture, notify -------
+# Arguments: <png> <type> <text>. Returns 0 when the comment is on the server.
+post_shot() {
+  local png=$1 type=$2 text=$3 size code id
+
+  # (4) Under the cap, without touching the caller's file: a bounded resize
+  # first, then halve until it fits. A picture that had to shrink below 64 px
+  # is not worth posting.
+  cp -- "$png" "$tmp/shot.png" || return 1
+  size=$(stat -c %s "$tmp/shot.png")
+  if (( size > limit )); then
+    magick "$tmp/shot.png" -strip -resize '1600x1600>' "$tmp/small.png" && mv -f "$tmp/small.png" "$tmp/shot.png"
+    size=$(stat -c %s "$tmp/shot.png")
+  fi
+  while (( size > limit )); do
+    if (( $(magick identify -format '%w' "$tmp/shot.png") < 64 )); then
+      echo "fbs-shot: cannot get the screenshot under $limit bytes" >&2
+      notify "Screenshot too large" "Could not shrink it under 550 KB."
+      return 1
+    fi
+    magick "$tmp/shot.png" -resize 50% "$tmp/small.png" && mv -f "$tmp/small.png" "$tmp/shot.png"
+    size=$(stat -c %s "$tmp/shot.png")
+  done
+
+  # (5) The comment. -k: a --https session has a self-signed certificate.
+  jq -n --arg type "$type" --arg text "$text (screenshot from the desktop)" '{
+    page: "/", author: "user", type: $type, anchor: {snippet: ""}, text: $text, via: "desktop-shot"
+  }' >"$tmp/comment.json"
+  code=$(curl -sS -k -m 10 -H 'X-Feedback-Agent: 0' -H 'Content-Type: application/json' \
+    --data-binary @"$tmp/comment.json" -o "$tmp/reply.json" -w '%{http_code}' "$api/comments$query" 2>"$tmp/curl.err")
+  if [[ $code != 2?? ]]; then
+    if [[ $code == 000 ]]; then
+      echo "fbs-shot: Feedback Studio at $api is not answering: $(<"$tmp/curl.err")" >&2
+      notify "Feedback Studio is not answering" "The session at $api may have stopped."
+    else
+      echo "fbs-shot: POST $api/comments returned HTTP $code: $(<"$tmp/reply.json")" >&2
+      notify "Comment not added" "POST /comments returned HTTP $code"
+    fi
+    return 1
+  fi
+  id=$(jq -r '.comment.id // empty' "$tmp/reply.json" 2>/dev/null)
+  if [[ -z $id ]]; then
+    echo "fbs-shot: no comment id in the reply: $(<"$tmp/reply.json")" >&2
+    notify "Comment not added" "The server's reply had no comment id"
+    return 1
+  fi
+
+  # (6) The picture, as a data URL. The base64 is megabytes: it goes through
+  # files, never through an argument, or exec would say "Argument list too long".
+  base64 -w0 "$tmp/shot.png" >"$tmp/shot.b64"
+  jq -n --rawfile b64 "$tmp/shot.b64" '{dataUrl: ("data:image/png;base64," + $b64)}' >"$tmp/shot.json"
+  code=$(curl -sS -k -m 20 -H 'X-Feedback-Agent: 0' -H 'Content-Type: application/json' \
+    --data-binary @"$tmp/shot.json" -o "$tmp/reply.json" -w '%{http_code}' "$api/shot/$id$query" 2>"$tmp/curl.err")
+  if [[ $code != 2?? ]]; then
+    echo "fbs-shot: POST $api/shot/$id returned HTTP $code: $(<"$tmp/reply.json")$(<"$tmp/curl.err")" >&2
+    notify "Comment added without its screenshot" "POST /shot returned HTTP $code"
+    return 1
+  fi
+
+  # (7)
+  notify "Screenshot comment added" "$text" --exec omarchy-launch-browser "$url"
+  return 0
+}
+
+case $mode in
+  post)
+    png=${2:-}; type=${3:-}; text=${4:-}
+    [[ -f $png ]] || { echo "fbs-shot: no such file: $png" >&2; exit 2; }
+    case $type in fix|change|improve) ;; *) echo "fbs-shot: type must be fix, change, or improve" >&2; exit 2 ;; esac
+    [[ -n $text ]] || { echo "fbs-shot: the text is empty" >&2; exit 2; }
+    post_shot "$png" "$type" "$text"
+    ;;
+
+  capture)
+    # (2) Better to learn about a missing gum now than after the region pick.
+    if ! command -v gum >/dev/null 2>&1; then
+      echo "fbs-shot: gum is not installed" >&2
+      notify "gum is not installed" "fbs-shot needs it to ask for the comment text."
+      exit 1
+    fi
+    png=$(mktemp "${TMPDIR:-/tmp}/fbs-shot-XXXXXX.png") || exit 1
+    geo=""
+    if command -v omarchy-capture-region >/dev/null 2>&1; then
+      # The picker prints "X,Y WxH" (nothing, status 1, when cancelled). With
+      # --keep-freeze the screen freeze stays up, with its pid on the first
+      # line, so grim captures the picked content and not what moved since.
+      freeze=""
+      { read -r freeze; read -r geo; } < <(omarchy-capture-region region --keep-freeze)
+      if [[ -n $geo ]]; then
+        grim -g "$geo" "$png" || geo=""
+      fi
+      [[ -n $freeze ]] && kill "$freeze" 2>/dev/null
+    else
+      geo=$(slurp 2>/dev/null) || geo=""
+      if [[ -n $geo ]]; then
+        grim -g "$geo" "$png" || geo=""
+      fi
+    fi
+    if [[ -z $geo ]]; then
+      rm -f -- "$png"
+      exit 0
+    fi
+    # (3) The text is asked in a terminal window, like fbs-launch's picker.
+    if ! command -v omarchy-launch-tui >/dev/null 2>&1; then
+      rm -f -- "$png"
+      echo "fbs-shot: omarchy-launch-tui is not installed" >&2
+      notify "Cannot open a terminal" "omarchy-launch-tui was not found."
+      exit 1
+    fi
+    exec omarchy-launch-tui --app-id=org.omarchy.feedback-studio bash "$self" --in-terminal "$pid" "$png"
+    ;;
+
+  terminal)
+    png=${2:-}
+    [[ -f $png ]] || { echo "fbs-shot: no such file: $png" >&2; exit 2; }
+    trap 'rm -rf -- "$tmp" "$png"' EXIT
+    if ! command -v gum >/dev/null 2>&1; then
+      echo
+      echo "  gum is not installed; fbs-shot needs it to ask for the comment text."
+      notify "gum is not installed" "fbs-shot needs it to ask for the comment text."
+      pause
+      exit 1
+    fi
+    echo
+    echo "  Screenshot comment for $label ($url)"
+    echo "  Esc cancels."
+    echo
+    text=$(gum input --width 80 --placeholder "What should change here?" \
+      --header "Feedback Studio: your comment") || { echo "  Cancelled."; sleep 1; exit 0; }
+    [[ -n ${text// /} ]] || { echo "  Cancelled: no text."; sleep 1; exit 0; }
+    type=$(gum choose --header "Kind of comment" fix change improve) || { echo "  Cancelled."; sleep 1; exit 0; }
+    echo
+    echo "  Posting..."
+    if ! post_shot "$png" "$type" "$text"; then
+      pause
+      exit 1
+    fi
+    ;;
+esac

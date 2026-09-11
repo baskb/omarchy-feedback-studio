@@ -6,6 +6,10 @@
 #   fbs-launch [options] path <folder|file.md> review that folder or file
 #
 # Options (the widget passes them from its settings):
+#   --tailscale         reach the session from a phone on your Tailscale tailnet
+#                       (Feedback Studio 1.4+ does this itself with a real
+#                       certificate; older versions get --https --host 0.0.0.0
+#                       and the widget rewrites the phone URL to the tailnet)
 #   --tunnel            add --tunnel: a public HTTPS URL, so the phone QR works anywhere
 #   --command "<cmd>"   command that runs Feedback Studio; default: npx -y feedback-studio@1
 #   --root <folder>     folder the picker starts in; default: $HOME
@@ -18,12 +22,14 @@ set -uo pipefail
 
 self=$(realpath "${BASH_SOURCE[0]}")
 tunnel=0
+tailscale=0
 command_override=""
 pick_root=""
 in_terminal=0
 while (( $# > 0 )); do
   case $1 in
     --tunnel) tunnel=1; shift ;;
+    --tailscale) tailscale=1; shift ;;
     --command) command_override=${2:-}; shift 2 ;;
     --root) pick_root=${2:-}; shift 2 ;;
     --in-terminal) in_terminal=1; shift ;;
@@ -49,6 +55,7 @@ pause() {
 if (( ! in_terminal )); then
   args=(--in-terminal)
   (( tunnel )) && args+=(--tunnel)
+  (( tailscale )) && args+=(--tailscale)
   [[ -n $command_override ]] && args+=(--command "$command_override")
   [[ -n $pick_root ]] && args+=(--root "$pick_root")
   exec omarchy-launch-tui --app-id=org.omarchy.feedback-studio bash "$self" "${args[@]}" "$mode" "$target"
@@ -75,6 +82,22 @@ fi
 cmd=${command_override:-"npx -y feedback-studio@1"}
 flags=()
 (( tunnel )) && flags+=(--tunnel)
+if (( tailscale && ! tunnel )); then
+  if ! command -v tailscale >/dev/null 2>&1 || ! timeout 3 tailscale ip -4 >/dev/null 2>&1; then
+    echo
+    echo "  Tailscale is not running here, so the phone URL will be local only."
+    echo "  Start it with: tailscale up"
+    notify "Tailscale is not running" "The session stays local. Run: tailscale up"
+  elif eval -- "$cmd" --help 2>/dev/null | grep -q -- '--tailscale'; then
+    flags+=(--tailscale)
+  else
+    # Older server: expose it and let the widget point the QR at the tailnet.
+    echo
+    echo "  This Feedback Studio has no --tailscale yet; using --https --host 0.0.0.0 instead."
+    echo "  The phone shows a one-time certificate warning. Update with: npx -y feedback-studio@latest"
+    flags+=(--https --host 0.0.0.0)
+  fi
+fi
 
 case $mode in
   demo)
@@ -92,6 +115,7 @@ case $mode in
         || { echo "  Cancelled."; sleep 1; exit 0; }
     fi
     target=$(realpath "$target")
+    bash "$(dirname "$self")/fbs-recent" add "$target" >/dev/null 2>&1 || true
     if [[ -f $target ]]; then
       case ${target,,} in
         *.md|*.markdown)
@@ -107,9 +131,13 @@ case $mode in
     elif [[ -d $target ]]; then
       cd "$target" || exit 1
       # A folder of Markdown with no site build is a document review, not a site.
-      if ! ls -d dist build out _site public .output/public site >/dev/null 2>&1 \
-         && ls ./*.md >/dev/null 2>&1; then
-        flags+=(--md .)
+      if ! ls -d dist build out _site public .output/public site >/dev/null 2>&1; then
+        if ls ./*.md >/dev/null 2>&1; then
+          flags+=(--md .)
+        elif [[ -f index.html ]]; then
+          # The folder is the site itself, not a project with a build inside.
+          flags+=(--dir .)
+        fi
       fi
     else
       echo "  Not found: $target"
@@ -118,7 +146,7 @@ case $mode in
     fi
     ;;
   *)
-    echo "usage: fbs-launch [--tunnel] [--command <cmd>] [--root <folder>] demo|pick|path <folder|file.md>" >&2
+    echo "usage: fbs-launch [--tailscale] [--tunnel] [--command <cmd>] [--root <folder>] demo|pick|path <folder|file.md>" >&2
     exit 2
     ;;
 esac
@@ -127,6 +155,8 @@ echo
 echo "  \$ $cmd ${flags[*]}"
 echo "    in $(pwd)"
 echo
+# Name the window so the widget's "show the server log" button can find it.
+printf '\033]2;Feedback Studio · %s\007' "$(basename "$(pwd)")"
 eval -- "$cmd" '"${flags[@]}"'
 status=$?
 if (( status != 0 && status != 130 )); then

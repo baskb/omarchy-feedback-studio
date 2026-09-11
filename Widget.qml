@@ -37,13 +37,19 @@ Panel {
   property bool cursorActive: false
   property int cursorIndex: 0
 
-  function launchArgs(mode, target) {
-    var cmd = ["bash", root.binDir + "/fbs-launch"]
-    if (root.setting("useTunnel", false) === true) cmd.push("--tunnel")
+  function launchOptions() {
+    var opts = []
+    if (svc.phoneAccess === "tunnel") opts.push("--tunnel")
+    else if (svc.phoneAccess === "tailscale") opts.push("--tailscale")
     var custom = String(root.setting("serverCommand", "") || "").trim()
-    if (custom !== "") cmd.push("--command", custom)
+    if (custom !== "") opts.push("--command", custom)
     var pickRoot = String(root.setting("pickRoot", "") || "").trim()
-    if (pickRoot !== "") cmd.push("--root", pickRoot)
+    if (pickRoot !== "") opts.push("--root", pickRoot)
+    return opts
+  }
+
+  function launchArgs(mode, target) {
+    var cmd = ["bash", root.binDir + "/fbs-launch"].concat(launchOptions())
     cmd.push(mode)
     if (target) cmd.push(target)
     return cmd
@@ -51,6 +57,43 @@ Panel {
 
   function launch(mode, target) {
     Quickshell.execDetached(launchArgs(mode, target))
+    root.close()
+  }
+
+  // Review the project under the focused window (a terminal's folder), or pick.
+  function launchHere() {
+    Quickshell.execDetached(["bash", root.binDir + "/fbs-here"].concat(launchOptions()))
+    root.close()
+  }
+
+  function openRecent(r) {
+    if (!r || !r.path) return
+    launch("path", r.path)
+  }
+
+  function processSession(s, mode) {
+    if (!s || !s.pid) return
+    Quickshell.execDetached(["bash", root.binDir + "/fbs-process", String(s.pid), mode || "process"])
+    root.close()
+  }
+
+  function shotSession(s) {
+    if (!s || !s.pid) return
+    Quickshell.execDetached(["bash", root.binDir + "/fbs-shot", String(s.pid)])
+    root.close()
+  }
+
+  // The launcher names its terminal "Feedback Studio · <project>".
+  function showLog(s) {
+    if (!s) return
+    var name = s.mode === "demo" ? "" : Model.title(s)
+    Quickshell.execDetached(["hyprctl", "dispatch", "focuswindow", "title:^Feedback Studio · " + name])
+    root.close()
+  }
+
+  function copyReport(s) {
+    if (!s || !s.dataDir) return
+    Quickshell.execDetached(["bash", "-c", 'wl-copy < "$1" && omarchy-notification-send --app-name "Feedback Studio" -g "󰍩" "Report copied" "REPORT.md is on the clipboard, ready for a PR description."', "_", s.dataDir + "/REPORT.md"])
     root.close()
   }
 
@@ -132,6 +175,10 @@ Panel {
     function status(): string { return svc.summaryText }
     function demo(): string { root.launch("demo"); return "ok" }
     function pick(): string { root.launch("pick"); return "ok" }
+    function here(): string { root.launchHere(); return "ok" }
+    function process(): string { root.processSession(svc.sessions.length > 0 ? svc.sessions[0] : null, "process"); return "ok" }
+    function watch(): string { root.processSession(svc.sessions.length > 0 ? svc.sessions[0] : null, "watch"); return "ok" }
+    function shot(): string { root.shotSession(svc.sessions.length > 0 ? svc.sessions[0] : null); return "ok" }
   }
 
   BarIconButton {
@@ -159,7 +206,7 @@ Panel {
     height: implicitHeight
     implicitHeight: Math.round(Style.font.caption * 0.95) + 2
     radius: height / 2
-    color: root.barForeground
+    color: svc.staleTotal > 0 ? root.urgent : root.barForeground
 
     Text {
       id: badgeText
@@ -170,6 +217,28 @@ Panel {
       font.family: root.fontFamily
       font.pixelSize: Math.round(Style.font.caption * 0.75)
       font.bold: true
+    }
+  }
+
+  // A dot in the opposite corner: an agent is on a session (pulsing while it
+  // works on a comment), without opening the panel.
+  Rectangle {
+    id: agentDot
+    visible: svc.agentState !== ""
+    anchors.right: parent.right
+    anchors.bottom: parent.bottom
+    anchors.rightMargin: 1
+    anchors.bottomMargin: root.vertical ? 1 : Math.max(1, Math.round((root.barSize - Style.bar.iconSlot) / 2))
+    width: Math.max(5, Math.round(Style.font.caption * 0.45))
+    height: width
+    radius: width / 2
+    color: root.accent
+    SequentialAnimation on opacity {
+      running: svc.agentState === "working"
+      loops: Animation.Infinite
+      NumberAnimation { from: 1; to: 0.25; duration: 700 }
+      NumberAnimation { from: 0.25; to: 1; duration: 700 }
+      onRunningChanged: if (!running) agentDot.opacity = 1
     }
   }
 
@@ -198,6 +267,11 @@ Panel {
         else if (t === "d" || t === "D") root.launch("demo")
         else if (t === "o" || t === "O") root.launch("pick")
         else if (t === "q" || t === "Q") root.toggleQr(root.selectedSession())
+        else if (t === "h" || t === "H") root.launchHere()
+        else if (t === "p" || t === "P") root.processSession(root.selectedSession(), "process")
+        else if (t === "w" || t === "W") root.processSession(root.selectedSession(), "watch")
+        else if (t === "s" || t === "S") root.shotSession(root.selectedSession())
+        else if (t === "l" || t === "L") root.showLog(root.selectedSession())
       }
 
       Flickable {
@@ -431,6 +505,16 @@ Panel {
               }
 
               Button {
+                text: "This window"
+                iconText: "󰖲"
+                tooltipText: "Review the project of the focused terminal (H)"
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: root.launchHere()
+              }
+
+              Button {
                 text: "Demo"
                 iconText: "󰐊"
                 tooltipText: "Try Feedback Studio on a bundled sample page (D)"
@@ -454,13 +538,83 @@ Panel {
             Text {
               width: parent.width
               textFormat: Text.PlainText
-              text: root.setting("useTunnel", false) === true
+              text: svc.phoneAccess === "tunnel"
                 ? "Sessions started here get a public HTTPS URL (--tunnel) for phone review."
-                : "Turn on \"Phone-ready sessions\" in the widget settings to give new sessions a phone URL."
+                : svc.phoneAccess === "tailscale"
+                  ? "Sessions started here are reachable from a phone on your Tailscale tailnet."
+                  : "Set \"Phone access\" in the widget settings (Tailscale or tunnel) to give new sessions a phone URL."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
+            }
+          }
+
+          // ---- recent -------------------------------------------------------
+
+          Column {
+            visible: svc.recentProjects.length > 0
+            width: parent.width
+            spacing: Style.space(4)
+
+            PanelSectionHeader {
+              text: "RECENT"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Repeater {
+              model: svc.recentProjects
+              CursorSurface {
+                id: recentRow
+                required property var modelData
+                width: parent.width
+                foreground: root.foreground
+                implicitHeight: recentText.implicitHeight + Style.spacing.rowPaddingX
+
+                MouseArea {
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.openRecent(recentRow.modelData)
+                }
+
+                RowLayout {
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  anchors.leftMargin: Style.space(10)
+                  anchors.rightMargin: Style.space(6)
+                  spacing: Style.space(8)
+
+                  Text {
+                    textFormat: Text.PlainText
+                    text: recentRow.modelData.kind === "md" ? "󰍔" : "󰝰"
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.icon
+                  }
+
+                  Text {
+                    id: recentText
+                    Layout.fillWidth: true
+                    textFormat: Text.PlainText
+                    text: recentRow.modelData.name
+                    color: root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                    elide: Text.ElideRight
+                  }
+
+                  Text {
+                    textFormat: Text.PlainText
+                    text: recentRow.modelData.at > 0 ? Model.ago(recentRow.modelData.at * 1000) : ""
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+              }
             }
           }
         }
@@ -473,6 +627,10 @@ Panel {
     property var session: null
     property int rowIndex: 0
     readonly property string agentText: session ? Model.agentLine(session) : ""
+    readonly property string desktopText: session ? Model.desktopLine(session) : ""
+    readonly property string activityText: session ? Model.activityLine(session, svc.now) : ""
+    readonly property string staleText: session && Model.questionIsStale(session, svc.questionStaleMin, svc.now)
+      ? "A question has waited " + svc.questionStaleMin + "+ minutes" : ""
     readonly property bool hasPhone: session ? session.phoneUrl !== "" : false
     readonly property bool showingQr: session ? svc.qrPid === session.pid : false
 
@@ -552,6 +710,89 @@ Panel {
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
           elide: Text.ElideRight
+        }
+
+        Text {
+          visible: sessionRow.desktopText !== ""
+          textFormat: Text.PlainText
+          Layout.fillWidth: true
+          text: "󰚩 " + sessionRow.desktopText
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+        }
+
+        Text {
+          visible: sessionRow.activityText !== ""
+          textFormat: Text.PlainText
+          Layout.fillWidth: true
+          text: sessionRow.activityText
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+        }
+
+        Text {
+          visible: sessionRow.staleText !== ""
+          textFormat: Text.PlainText
+          Layout.fillWidth: true
+          text: sessionRow.staleText
+          color: root.urgent
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+        }
+
+        // More actions, shown for the row under the cursor so the row stays calm.
+        Flow {
+          visible: sessionRow.hasCursor
+          Layout.fillWidth: true
+          Layout.topMargin: Style.space(4)
+          spacing: Style.space(4)
+
+          Button {
+            visible: sessionRow.agentText === ""
+            text: "Claude"
+            iconText: "󰚩"
+            tooltipText: "Open Claude Code in this project and ask it to process the feedback (P). W: watch mode."
+            bordered: true
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onClicked: root.processSession(sessionRow.session, "process")
+          }
+
+          Button {
+            text: "Screenshot"
+            iconText: "󰹑"
+            tooltipText: "Select a region of the screen and attach it as a comment (S)"
+            bordered: true
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onClicked: root.shotSession(sessionRow.session)
+          }
+
+          Button {
+            text: "Log"
+            iconText: "󰆍"
+            tooltipText: "Show the server's terminal window (L)"
+            bordered: true
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onClicked: root.showLog(sessionRow.session)
+          }
+
+          Button {
+            visible: sessionRow.session ? sessionRow.session.hasReport : false
+            text: "Copy report"
+            iconText: "󰆏"
+            tooltipText: "Copy .feedback/REPORT.md to the clipboard"
+            bordered: true
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            onClicked: root.copyReport(sessionRow.session)
+          }
         }
       }
 

@@ -1,13 +1,36 @@
 #!/bin/bash
 # Lists the Feedback Studio review servers running on this machine as JSON.
 #
+#   fbs-sessions [--phone tailscale]
+#
 # Feedback Studio (1.3.0 and newer) registers every server it starts in
 # ~/.feedback-studio/sessions/<pid>.json for as long as it runs. This script
 # sweeps entries whose process is gone, asks each live server for its comment
-# counts and agent presence over its local API, and prints one JSON array for
-# the bar widget. stdout is always JSON; problems go to stderr, and a server
-# that does not answer is still listed, marked unreachable, rather than dropped.
+# counts, agent presence, and latest activity over its local API, and prints
+# one JSON array for the bar widget. stdout is always JSON; problems go to
+# stderr, and a server that does not answer is still listed, marked
+# unreachable, rather than dropped.
+#
+# Per session it also reports what the desktop can add: how many Claude Code
+# processes run in the session's project (`claudeHere`), whether a review
+# digest exists (`hasReport`), which open comments wait for the reviewer rather
+# than the agent (`forYou`: the agent answered or queued them), the oldest
+# unanswered question (`staleQuestionSince`), and the five newest comments
+# (`recent`), which the widget diffs between polls for its notifications.
+#
+# --phone tailscale: a session started with the widget's Tailscale fallback
+# (Feedback Studio older than 1.4.0 has no --tailscale flag, so the widget
+# starts it with --https --host 0.0.0.0) registers a LAN phone URL; rewrite
+# that to the Tailscale address so the QR code works off the local Wi-Fi.
 set -uo pipefail
+
+phone=""
+while (( $# > 0 )); do
+  case $1 in
+    --phone) phone=${2:-}; shift 2 ;;
+    *) echo "fbs-sessions: unknown option $1" >&2; exit 2 ;;
+  esac
+done
 
 dir="${CLAUDE_PLUGIN_DATA:-$HOME/.feedback-studio}/sessions"
 [[ -d $dir ]] || { echo '[]'; exit 0; }
@@ -29,6 +52,15 @@ fetch_json() {
   fi
 }
 
+# Working directories of the Claude Code processes on this machine, one per
+# line, so a session can say "Claude Code is open in this project".
+claude_cwds=$(for p in $(pgrep -x claude 2>/dev/null); do readlink "/proc/$p/cwd" 2>/dev/null; done)
+
+tailscale_ip=""
+if [[ $phone == tailscale ]] && command -v tailscale >/dev/null 2>&1; then
+  tailscale_ip=$(timeout 2 tailscale ip -4 2>/dev/null | head -1)
+fi
+
 entries=()
 for f in "$dir"/*.json; do
   [[ -f $f ]] || continue
@@ -42,25 +74,53 @@ for f in "$dir"/*.json; do
   [[ -n $key ]] && query="?key=$key"
   printf 'null' >"$tmp/comments"
   printf 'null' >"$tmp/agent"
+  printf 'null' >"$tmp/activity"
   if [[ -n $api ]]; then
     fetch_json "$api/comments$query" "$tmp/comments"
     fetch_json "$api/agent-status$query" "$tmp/agent"
+    fetch_json "$api/activity$query" "$tmp/activity"
+  fi
+
+  data_dir=$(jq -r '.dataDir // empty' "$f")
+  has_report=false
+  [[ -n $data_dir && -f $data_dir/REPORT.md ]] && has_report=true
+  cwd=$(jq -r '.cwd // empty' "$f")
+  claude_here=0
+  if [[ -n $cwd && -n $claude_cwds ]]; then
+    claude_here=$(grep -c -x -F -- "$cwd" <<<"$claude_cwds")
   fi
 
   entry=$(jq -c \
     --slurpfile comments "$tmp/comments" \
-    --slurpfile agent "$tmp/agent" '
-    $comments[0] as $comments | $agent[0] as $agent
+    --slurpfile agent "$tmp/agent" \
+    --slurpfile activity "$tmp/activity" \
+    --argjson hasReport "$has_report" \
+    --argjson claudeHere "$claude_here" \
+    --arg tsIp "$tailscale_ip" '
+    $comments[0] as $comments | $agent[0] as $agent | $activity[0] as $activity
     | ($comments.comments // []) as $c
-    | {
-        pid, port, label, mode, served, cwd, dataDir, url, phoneUrl, tunnel, share, startedAt,
+    | [$c[] | select(.status == "open" or .status == "approved")] as $openList
+    | def lastAuthor: ((.thread // []) | if length > 0 then .[-1].author else "" end);
+    {
+        pid, port, label, mode, served, cwd, dataDir, url, phoneUrl, tunnel, tailscale, share, startedAt,
         project: ((.cwd // "") | split("/") | map(select(. != "")) | last // ""),
         reachable: ($comments != null),
         total: ($c | length),
-        open: ([$c[] | select(.status == "open" or .status == "approved")] | length),
+        open: ($openList | length),
         resolved: ([$c[] | select(.status == "resolved")] | length),
-        agent: ($agent.agent // null)
-      }' "$f" 2>/dev/null) || { echo "fbs-sessions: could not read $f" >&2; continue; }
+        forYou: ([$openList[] | select(lastAuthor == "agent")] | length),
+        staleQuestionSince: ([$openList[] | select(.type == "question" and lastAuthor != "agent") | .createdAt] | min),
+        recent: ([$c | sort_by(.createdAt) | reverse | .[:5][]
+                  | {id, type, author, authorName, createdAt, text: ((.text // "")[:90])}]),
+        activity: (($activity.activity // []) | if length > 0 then (.[-1] | {kind, text, at, commentId}) else null end),
+        agent: ($agent.agent // null),
+        claudeHere: $claudeHere,
+        hasReport: $hasReport
+      }
+    # The Tailscale fallback: swap a private LAN host for the tailnet address.
+    | if $tsIp != "" and .tailscale != true and (.phoneUrl // "" | test("^https?://(10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.)"))
+      then .phoneUrl |= sub("^(?<s>https?://)[^:/]+"; "\(.s)\($tsIp)") | .tailscale = "fallback"
+      else . end' "$f" 2>/dev/null) || { echo "fbs-sessions: could not read $f" >&2; continue; }
   entries+=("$entry")
 done
 
