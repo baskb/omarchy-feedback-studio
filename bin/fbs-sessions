@@ -1,7 +1,7 @@
 #!/bin/bash
 # Lists the Feedback Studio review servers running on this machine as JSON.
 #
-# Feedback Studio (1.0.1 and newer) registers every server it starts in
+# Feedback Studio (1.3.0 and newer) registers every server it starts in
 # ~/.feedback-studio/sessions/<pid>.json for as long as it runs. This script
 # sweeps entries whose process is gone, asks each live server for its comment
 # counts and agent presence over its local API, and prints one JSON array for
@@ -12,10 +12,21 @@ set -uo pipefail
 dir="${CLAUDE_PLUGIN_DATA:-$HOME/.feedback-studio}/sessions"
 [[ -d $dir ]] || { echo '[]'; exit 0; }
 
-# Echo $1 when it is valid JSON, else "null": an error page or an empty reply
-# must not break the jq call below.
-json_or_null() {
-  if [[ -n ${1:-} ]] && jq -e . >/dev/null 2>&1 <<<"$1"; then printf '%s' "$1"; else printf 'null'; fi
+# The API replies go through files, not arguments: a session with a few
+# hundred comments answers with more than the 128 KB Linux allows for one
+# argument, and jq --argjson would fail with "Argument list too long".
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/fbs-sessions.XXXXXX") || exit 1
+trap 'rm -rf -- "$tmp"' EXIT
+
+# Fetch $1 into file $2 as JSON. An error page, an empty reply, or no reply at
+# all leaves "null" in the file, so the jq call below always gets valid input.
+fetch_json() {
+  # -k: a --https session uses a self-signed certificate. The header says
+  # "not the agent", so this poll never shows up as agent presence on the page.
+  if ! curl -sS -k -m 2 -H 'X-Feedback-Agent: 0' -o "$2" "$1" 2>/dev/null \
+     || ! jq -e . "$2" >/dev/null 2>&1; then
+    printf 'null' >"$2"
+  fi
 }
 
 entries=()
@@ -29,19 +40,18 @@ for f in "$dir"/*.json; do
   key=$(jq -r '.adminKey // empty' "$f")
   query=""
   [[ -n $key ]] && query="?key=$key"
-  comments=""
-  agent=""
+  printf 'null' >"$tmp/comments"
+  printf 'null' >"$tmp/agent"
   if [[ -n $api ]]; then
-    # -k: a --https session uses a self-signed certificate. The header says
-    # "not the agent", so this poll never shows up as agent presence on the page.
-    comments=$(curl -sS -k -m 2 -H 'X-Feedback-Agent: 0' "$api/comments$query" 2>/dev/null)
-    agent=$(curl -sS -k -m 2 -H 'X-Feedback-Agent: 0' "$api/agent-status$query" 2>/dev/null)
+    fetch_json "$api/comments$query" "$tmp/comments"
+    fetch_json "$api/agent-status$query" "$tmp/agent"
   fi
 
   entry=$(jq -c \
-    --argjson comments "$(json_or_null "$comments")" \
-    --argjson agent "$(json_or_null "$agent")" '
-    ($comments.comments // []) as $c
+    --slurpfile comments "$tmp/comments" \
+    --slurpfile agent "$tmp/agent" '
+    $comments[0] as $comments | $agent[0] as $agent
+    | ($comments.comments // []) as $c
     | {
         pid, port, label, mode, served, cwd, dataDir, url, phoneUrl, tunnel, share, startedAt,
         project: ((.cwd // "") | split("/") | map(select(. != "")) | last // ""),

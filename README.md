@@ -35,7 +35,7 @@ This plugin puts it in the **Omarchy bar**:
   ```
 
   The widget tells you when Node is missing. Feedback Studio itself is fetched
-  from npm on first use (`npx -y feedback-studio@1`) and needs **1.0.1 or
+  from npm on first use (`npx -y feedback-studio@1`) and needs **1.3.0 or
   newer**, the first release that registers its sessions for this widget.
 - `jq`, `curl`, `gum`, and `qrencode` ship with Omarchy.
 
