@@ -195,27 +195,46 @@ scripts in `bin/` do the work:
 - `fbs-qr` turns a URL into a 0/1 matrix with `qrencode`, the same way the
   shell's own Wi-Fi share card does.
 
-Nothing here installs packages, runs as root, or phones home. The widget's own
+The widget itself installs nothing and never runs as root. Feedback Studio is
+not bundled: the launch buttons run `npx -y feedback-studio@1`, which fetches
+the newest 1.x from npm on first use (the package is published from
+[baskb/feedback-studio](https://github.com/baskb/feedback-studio)). Set
+`serverCommand` to run a copy you checked yourself instead. The widget's own
 network traffic goes to `127.0.0.1`; the Tailscale option asks the local
-`tailscale` daemon for its address.
+`tailscale` daemon for its address. Text from comments (which can come from a
+phone, or from anyone with a tunnel link) is shown as plain text, and in
+notifications is stripped of anything the notification renderer would turn
+into markup or a link.
 
-## Update and remove
+## Update
 
 ```
 omarchy plugin update baskb.feedback-studio
-omarchy plugin remove baskb.feedback-studio
 ```
 
 Feedback Studio itself updates through npm: `npx -y feedback-studio@1` always
 runs the newest 1.x.
 
-## Development
-
-Clone the repo and point Omarchy at the checkout, then edit. Scripts take
-effect on the next poll; after a QML change run `omarchy restart shell`:
+## Remove
 
 ```
-git clone https://github.com/baskb/omarchy-feedback-studio ~/src/omarchy-feedback-studio
+omarchy plugin remove baskb.feedback-studio
+rm -rf ~/.local/state/feedback-studio-widget     # the recent-projects list
+```
+
+If you added the hotkeys or menu entries above, delete those lines from
+`~/.config/hypr/bindings.lua` and `~/.config/omarchy/extensions/omarchy-menu.jsonc`.
+Feedback Studio itself keeps its comments in each project's `.feedback/`
+folder and its npm copy in the npx cache (`~/.npm/_npx`); the plugin leaves
+both alone.
+
+## Development
+
+Clone this repository to `~/src/omarchy-feedback-studio` and point Omarchy at
+the checkout, then edit. Scripts take effect on the next poll; after a QML
+change run `omarchy restart shell`:
+
+```
 ln -s ~/src/omarchy-feedback-studio ~/.config/omarchy/plugins/baskb.feedback-studio
 omarchy-shell shell rescanPlugins
 omarchy plugin enable baskb.feedback-studio right
@@ -231,4 +250,4 @@ To run the widget against a Feedback Studio clone instead of npm, set the
 ## License
 
 MIT. Feedback Studio is a separate project under the same license; see
-`LICENSE` for the tools this plugin runs.
+[`THIRD-PARTY.md`](THIRD-PARTY.md) for the software this plugin runs.

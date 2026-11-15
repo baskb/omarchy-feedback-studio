@@ -46,7 +46,8 @@ trap 'rm -rf -- "$tmp"' EXIT
 fetch_json() {
   # -k: a --https session uses a self-signed certificate. The header says
   # "not the agent", so this poll never shows up as agent presence on the page.
-  if ! curl -sS -k -m 2 -H 'X-Feedback-Agent: 0' -o "$2" "$1" 2>/dev/null \
+  # --max-filesize: a reply larger than any real session list is refused.
+  if ! curl -sS -k -m 2 --max-filesize 5000000 -H 'X-Feedback-Agent: 0' -o "$2" "$1" 2>/dev/null \
      || ! jq -e . "$2" >/dev/null 2>&1; then
     printf 'null' >"$2"
   fi
@@ -111,9 +112,9 @@ for f in "$dir"/*.json; do
         forYou: ([$openList[] | select(lastAuthor == "agent")] | length),
         staleQuestionSince: ([$openList[] | select(.type == "question" and lastAuthor != "agent") | .createdAt] | min),
         recent: ([$c | sort_by(.createdAt) | reverse | .[:5][]
-                  | {id, type, author, authorName, createdAt, text: ((.text // "")[:90])}]),
-        activity: (($activity.activity // []) | if length > 0 then (.[-1] | {kind, text, at, commentId}) else null end),
-        agent: ($agent.agent // null),
+                  | {id, type, author, authorName: (.authorName // "" | tostring | .[:60]), createdAt, text: (.text // "" | tostring | .[:90])}]),
+        activity: (($activity.activity // []) | if length > 0 then (.[-1] | {kind, text: (.text // "" | tostring | .[:200]), file: (.file // "" | tostring | .[:200]), at, commentId}) else null end),
+        agent: ($agent.agent // null | if type == "object" then {state, name: (.name // "" | tostring | .[:40]), note: (.note // "" | tostring | .[:120])} else null end),
         claudeHere: $claudeHere,
         hasReport: $hasReport
       }

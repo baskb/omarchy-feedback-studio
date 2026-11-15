@@ -157,13 +157,27 @@ function typeWord(type) {
   return "Comment"
 }
 
+// Text for an Omarchy notification. Its renderer decodes entities (up to three
+// passes) before it puts back <b>, <i>, <a href> and friends, so escaping with
+// &lt; does not help: a comment typed on a phone could still style the toast or
+// add a link. A zero-width space after every "<" and "&" breaks each tag and
+// entity shape without changing what is shown, and one after "://" stops the
+// renderer turning a bare URL into a link. Control characters go, and the
+// length is bounded.
+function notifyText(value, max) {
+  var s = str(value).replace(/[\u0000-\u001f\u007f]+/g, " ")
+  var limit = max > 0 ? max : 200
+  if (s.length > limit) s = s.substring(0, limit - 1) + "\u2026"
+  return s.replace(/</g, "<\u200b").replace(/&/g, "&\u200b").replace(/:\/\//g, ":\u200b//")
+}
+
 // Headline and body for the toast about `fresh` (the new comments of one poll).
 function newCommentNotification(s, fresh) {
   var n = fresh.length
-  var headline = (n === 1 ? typeWord(fresh[0].type) : n + " new comments") + " · " + title(s)
+  var headline = (n === 1 ? typeWord(fresh[0].type) : n + " new comments") + " · " + notifyText(title(s), 60)
   var first = fresh[0]
-  var quote = first.text ? "\u201c" + first.text + "\u201d" : typeWord(first.type).toLowerCase() + " without text"
-  var who = first.authorName ? first.authorName + ": " : ""
+  var quote = first.text ? "\u201c" + notifyText(first.text, 120) + "\u201d" : typeWord(first.type).toLowerCase() + " without text"
+  var who = first.authorName ? notifyText(first.authorName, 40) + ": " : ""
   var body = who + quote
   if (n > 1) body += " and " + (n - 1) + " more"
   body += " · " + s.open + " open"
@@ -182,7 +196,7 @@ function questionIsStale(s, minutes, now) {
 
 function staleNotification(s, minutes) {
   return {
-    headline: "A question is waiting · " + title(s),
+    headline: "A question is waiting · " + notifyText(title(s), 60),
     body: "No agent has answered for " + minutes + (minutes === 1 ? " minute" : " minutes") + ". Click to send it to Claude Code."
   }
 }
@@ -191,7 +205,7 @@ function staleNotification(s, minutes) {
 function roundDoneNotification(s, applied) {
   var body = (applied === 1 ? "1 comment applied" : applied + " comments applied") + " · " + s.open + " open"
   if (s.forYou > 0) body += " · " + s.forYou + " for you"
-  return { headline: "Round done · " + title(s), body: body }
+  return { headline: "Round done · " + notifyText(title(s), 60), body: body }
 }
 
 // "working" when any agent is on a comment, "online" when any is present, else "".
@@ -271,6 +285,7 @@ if (typeof module !== "undefined") {
     newComments: newComments,
     recentIds: recentIds,
     typeWord: typeWord,
+    notifyText: notifyText,
     newCommentNotification: newCommentNotification,
     questionIsStale: questionIsStale,
     staleNotification: staleNotification,

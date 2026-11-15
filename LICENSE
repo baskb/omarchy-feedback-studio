@@ -19,13 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-External software this plugin runs but does not bundle:
-
-- feedback-studio (npm, MIT) by Bastiaan Kortenbout: https://github.com/baskb/feedback-studio
-  Fetched by `npx` on first use. Its own optional helpers (marked, selfsigned,
-  cloudflared, html-to-image) are listed in that project's THIRD-PARTY.md.
-- qrencode (LGPL-2.1) for the phone QR code; shipped with Omarchy.
-- jq, curl, gum, mise: shipped with Omarchy.

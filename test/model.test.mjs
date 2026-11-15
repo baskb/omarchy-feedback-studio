@@ -144,3 +144,47 @@ test('round done, agent state, activity, and desktop lines', () => {
   assert.equal(Model.desktopLine(Model.normalizeSession({ claudeHere: 1, agent: { state: 'online' } })), '');
   assert.equal(Model.desktopLine(Model.normalizeSession({})), '');
 });
+
+// Omarchy's notification renderer decodes entities before it restores <b>,
+// <i>, <a href>, so neither raw tags nor &lt;-escaped ones may survive.
+const tagShape = /<\/?[a-z]/i;
+const entityShape = /&(#\d+|#x[0-9a-f]+|[a-z]+);/i;
+
+test('notifyText breaks markup and entity shapes but keeps the visible text', () => {
+  for (const input of [
+    '<b>bold</b>', '<a href="https://example.invalid/x">click</a>', '&lt;b&gt;sneaky&lt;/b&gt;',
+    '&amp;lt;i&amp;gt;double', '&#60;u&#62;numeric', '<img src="https://example.invalid/t">',
+    'see https://example.invalid/phish',
+  ]) {
+    const out = Model.notifyText(input, 500);
+    assert.doesNotMatch(out, tagShape, input);
+    assert.doesNotMatch(out, entityShape, input);
+    assert.doesNotMatch(out, /https?:\/\//i, input);
+    assert.equal(out.replace(/​/g, ''), input);
+  }
+});
+
+test('notifyText drops control characters and bounds the length', () => {
+  assert.equal(Model.notifyText('a\nb\u0007c', 50), 'a b c');
+  const long = Model.notifyText('x'.repeat(500), 40);
+  assert.equal(long.length, 40);
+  assert.ok(long.endsWith('…'));
+  assert.equal(Model.notifyText(null), '');
+});
+
+test('every notification neutralises the comment, author and session title', () => {
+  const s = Model.normalizeSession({ ...sample, label: '<b>Site</b>', open: 1, forYou: 0, staleQuestionSince: '2026-01-01T00:00:00Z' });
+  const fresh = [{ id: 'c1', type: 'fix', author: 'reviewer', authorName: '<i>Eve</i>', text: '&lt;a href="https://example.invalid"&gt;x&lt;/a&gt;' }];
+  const all = [
+    Model.newCommentNotification(s, fresh),
+    Model.staleNotification(s, 10),
+    Model.roundDoneNotification(s, 2),
+  ];
+  for (const n of all) {
+    for (const part of [n.headline, n.body]) {
+      assert.doesNotMatch(part, tagShape);
+      assert.doesNotMatch(part, entityShape);
+    }
+  }
+  assert.ok(all[0].body.length < 300);
+});
