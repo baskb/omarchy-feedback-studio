@@ -112,7 +112,10 @@ for f in "$dir"/*.json; do
         forYou: ([$openList[] | select(lastAuthor == "agent")] | length),
         staleQuestionSince: ([$openList[] | select(.type == "question" and lastAuthor != "agent") | .createdAt] | min),
         recent: ([$c | sort_by(.createdAt) | reverse | .[:5][]
-                  | {id, type, author, authorName: (.authorName // "" | tostring | .[:60]), createdAt, text: (.text // "" | tostring | .[:90])}]),
+                  | (if (.attachments | type) == "array" then .attachments else [] end) as $att
+                  | {id, type, author, authorName: (.authorName // "" | tostring | .[:60]), createdAt, text: (.text // "" | tostring | .[:90]),
+                     photos: ($att | length),
+                     photo: ($att[0] | if type == "object" then (.file // "" | tostring | .[:200]) else "" end)}]),
         activity: (($activity.activity // []) | if length > 0 then (.[-1] | {kind, text: (.text // "" | tostring | .[:200]), file: (.file // "" | tostring | .[:200]), at, commentId}) else null end),
         agent: ($agent.agent // null | if type == "object" then {state, name: (.name // "" | tostring | .[:40]), note: (.note // "" | tostring | .[:120])} else null end),
         claudeHere: $claudeHere,

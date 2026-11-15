@@ -15,15 +15,20 @@
 # for everything the overlay cannot reach: a native dialog, a second window,
 # the page as a whole. The picker is Omarchy's own (omarchy-capture-region,
 # with slurp + grim as the fallback), the text is asked in a terminal window
-# with gum, the same way fbs-launch asks for a folder, and the picture goes up
-# as the comment's screenshot after ImageMagick has shrunk it below the
-# server's 600 KB cap. Every request says X-Feedback-Agent: 0, so posting from
-# the desktop never shows up on the page as the coding agent being online.
+# with gum, the same way fbs-launch asks for a folder. The picture goes up as a
+# photo on the comment (Feedback Studio 1.5.0 and newer: a thumbnail on the
+# card, the photo viewer, and a photos: line for the agent in FEEDBACK.md),
+# shrunk only when it is over the server's 4 MB per photo. An older server has
+# no photo uploads; then it goes up as the comment's screenshot instead, shrunk
+# below that route's 600 KB cap. Every request says X-Feedback-Agent: 0, so
+# posting from the desktop never shows up on the page as the coding agent
+# being online.
 set -uo pipefail
 
 self=$(realpath "${BASH_SOURCE[0]}")
 dir="${CLAUDE_PLUGIN_DATA:-$HOME/.feedback-studio}/sessions"
-limit=550000   # bytes; the server refuses a PNG over 600 000
+limit=550000          # bytes; the old screenshot route refuses a PNG over 600 000
+photo_limit=3900000   # bytes; a photo upload is refused over 4 000 000
 
 # The fallback notifier knows no --exec: drop it and what follows.
 notify() {
@@ -75,10 +80,86 @@ query=""
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/fbs-shot.XXXXXX") || exit 1
 trap 'rm -rf -- "$tmp"' EXIT
 
-# ---- steps 4-7: shrink, post the comment, upload the picture, notify -------
+# The query for a request: the session key, when there is one, plus $1.
+with_query() {
+  local extra=${1:-}
+  if [[ -n $query && -n $extra ]]; then printf '%s&%s' "$query" "$extra"
+  elif [[ -n $extra ]]; then printf '?%s' "$extra"
+  else printf '%s' "$query"; fi
+}
+
+# POST $tmp/comment.json to /comments. Prints the new comment's id; returns 1
+# (after saying why) when the comment is not on the server.
+create_comment() {
+  local code id
+  code=$(curl -sS -k -m 10 -H 'X-Feedback-Agent: 0' -H 'Content-Type: application/json' \
+    --data-binary @"$tmp/comment.json" -o "$tmp/reply.json" -w '%{http_code}' "$api/comments$query" 2>"$tmp/curl.err")
+  if [[ $code != 2?? ]]; then
+    if [[ $code == 000 ]]; then
+      echo "fbs-shot: Feedback Studio at $api is not answering: $(<"$tmp/curl.err")" >&2
+      notify "Feedback Studio is not answering" "The session at $api may have stopped."
+    else
+      echo "fbs-shot: POST $api/comments returned HTTP $code: $(<"$tmp/reply.json")" >&2
+      notify "Comment not added" "POST /comments returned HTTP $code"
+    fi
+    return 1
+  fi
+  id=$(jq -r '.comment.id // empty' "$tmp/reply.json" 2>/dev/null)
+  if [[ -z $id ]]; then
+    echo "fbs-shot: no comment id in the reply: $(<"$tmp/reply.json")" >&2
+    notify "Comment not added" "The server's reply had no comment id"
+    return 1
+  fi
+  printf '%s' "$id"
+}
+
+# ---- steps 4-7: upload the picture, post the comment, notify ---------------
 # Arguments: <png> <type> <text>. Returns 0 when the comment is on the server.
 post_shot() {
-  local png=$1 type=$2 text=$3 size code id
+  local png=$1 type=$2 text=$3 size code id upload mime=image/png file w h
+
+  # (4a) As a photo (Feedback Studio 1.5.0+). A screenshot is a PNG; one over
+  # the photo cap becomes a JPEG at the overlay's own size, 2560 px.
+  file="$tmp/photo.png"
+  cp -- "$png" "$file" || return 1
+  size=$(stat -c %s "$file")
+  if (( size > photo_limit )); then
+    magick "$file" -strip -resize '2560x2560>' -quality 85 "$tmp/photo.jpg" || return 1
+    file="$tmp/photo.jpg"; mime=image/jpeg
+    size=$(stat -c %s "$file")
+  fi
+  if (( size <= photo_limit )); then
+    read -r w h < <(magick identify -format '%w %h\n' "$file" 2>/dev/null) || true
+    [[ $w =~ ^[0-9]+$ && $h =~ ^[0-9]+$ ]] || { w=""; h=""; }
+    code=$(curl -sS -k -m 30 -H 'X-Feedback-Agent: 0' -H "Content-Type: $mime" \
+      --data-binary @"$file" -o "$tmp/upload.json" -w '%{http_code}' \
+      "$api/uploads$(with_query "name=desktop-screenshot.${file##*.}${w:+&w=$w&h=$h}")" 2>"$tmp/curl.err")
+    if [[ $code == 2?? ]]; then
+      upload=$(jq -r '.upload.id // empty' "$tmp/upload.json" 2>/dev/null)
+      if [[ -n $upload ]]; then
+        # (5a) The comment claims the photo by its id.
+        jq -n --arg type "$type" --arg text "$text (screenshot from the desktop)" --arg upload "$upload" '{
+          page: "/", author: "user", type: $type, anchor: {snippet: ""}, text: $text,
+          via: "desktop-shot", attachments: [$upload]
+        }' >"$tmp/comment.json"
+        id=$(create_comment) || return 1
+        notify "Screenshot comment added" "$text" --exec omarchy-launch-browser "$url"
+        return 0
+      fi
+    elif [[ $code == 000 ]]; then
+      echo "fbs-shot: Feedback Studio at $api is not answering: $(<"$tmp/curl.err")" >&2
+      notify "Feedback Studio is not answering" "The session at $api may have stopped."
+      return 1
+    elif [[ $code != 404 && $code != 405 ]]; then
+      # The server has photo uploads but refused this one: say so, do not
+      # quietly fall back to a smaller picture.
+      echo "fbs-shot: POST $api/uploads returned HTTP $code: $(<"$tmp/upload.json")" >&2
+      notify "Screenshot not added" "POST /uploads returned HTTP $code"
+      return 1
+    fi
+  fi
+
+  # ---- An older Feedback Studio (no /uploads): the screenshot route --------
 
   # (4) Under the cap, without touching the caller's file: a bounded resize
   # first, then halve until it fits. A picture that had to shrink below 64 px
@@ -103,24 +184,7 @@ post_shot() {
   jq -n --arg type "$type" --arg text "$text (screenshot from the desktop)" '{
     page: "/", author: "user", type: $type, anchor: {snippet: ""}, text: $text, via: "desktop-shot"
   }' >"$tmp/comment.json"
-  code=$(curl -sS -k -m 10 -H 'X-Feedback-Agent: 0' -H 'Content-Type: application/json' \
-    --data-binary @"$tmp/comment.json" -o "$tmp/reply.json" -w '%{http_code}' "$api/comments$query" 2>"$tmp/curl.err")
-  if [[ $code != 2?? ]]; then
-    if [[ $code == 000 ]]; then
-      echo "fbs-shot: Feedback Studio at $api is not answering: $(<"$tmp/curl.err")" >&2
-      notify "Feedback Studio is not answering" "The session at $api may have stopped."
-    else
-      echo "fbs-shot: POST $api/comments returned HTTP $code: $(<"$tmp/reply.json")" >&2
-      notify "Comment not added" "POST /comments returned HTTP $code"
-    fi
-    return 1
-  fi
-  id=$(jq -r '.comment.id // empty' "$tmp/reply.json" 2>/dev/null)
-  if [[ -z $id ]]; then
-    echo "fbs-shot: no comment id in the reply: $(<"$tmp/reply.json")" >&2
-    notify "Comment not added" "The server's reply had no comment id"
-    return 1
-  fi
+  id=$(create_comment) || return 1
 
   # (6) The picture, as a data URL. The base64 is megabytes: it goes through
   # files, never through an argument, or exec would say "Argument list too long".

@@ -22,7 +22,8 @@ This plugin puts it in the **Omarchy bar**:
   Code is already open in that project.
 - **Notifications that say what was said.** A new comment becomes a desktop
   toast with its type and text ("Question · Demo: Ann: “Where does this
-  button lead?” · 4 open"). Click it to open the page, or, by setting, to
+  button lead?” · 4 open"). A comment with photos says so ("📷 2 photos") and
+  shows the first one in the toast. Click it to open the page, or, by setting, to
   send the session to Claude Code. When an agent leaves after a round you get
   "Round done · 3 comments applied · 1 open". A question nobody answers for
   ten minutes gets one critical toast whose click starts Claude Code in watch
@@ -35,8 +36,9 @@ This plugin puts it in the **Omarchy bar**:
   project with "Please process feedback", or focuses the Claude Code window
   that is already there.
 - **Screenshot comments.** Select a region of the screen and it becomes a
-  comment with the picture attached, for visual bugs that are hard to pin by
-  clicking.
+  comment with the picture attached as a photo, for visual bugs that are hard
+  to pin by clicking. It shows as a thumbnail on the comment, opens in the
+  photo viewer, and is listed for the agent in `FEEDBACK.md`.
 - **Start a review without a terminal.** Open a project folder or a `.md` file
   through a picker, review the project of the focused terminal window, restart
   one of the last five reviewed projects, or try the bundled demo. The server's
@@ -58,6 +60,8 @@ This plugin puts it in the **Omarchy bar**:
   The widget tells you when Node is missing. Feedback Studio itself is fetched
   from npm on first use (`npx -y feedback-studio@1`) and needs **1.3.0 or
   newer**, the first release that registers its sessions for this widget.
+  Photos need 1.5.0; with an older server a screenshot comment falls back to
+  the comment's single screenshot (PNG, shrunk below 600 KB).
 - `jq`, `curl`, `gum`, `qrencode`, `grim`, `slurp`, ImageMagick, and `wl-copy`
   ship with Omarchy. `tailscale` only for the Tailscale phone option; `claude`
   (Claude Code) only for the hand-off buttons.

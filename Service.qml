@@ -158,13 +158,16 @@ Item {
     return null
   }
 
-  function notifyCommand(headline, body, urgency) {
-    return ["omarchy-notification-send", "--app-name", "Feedback Studio", "-g", "󰍩", "-u", urgency || "normal", headline, body]
+  // image: a local file to show in the toast (a comment's first photo), or "".
+  function notifyCommand(headline, body, urgency, image) {
+    var cmd = ["omarchy-notification-send", "--app-name", "Feedback Studio", "-g", "󰍩", "-u", urgency || "normal"]
+    if (image) cmd = cmd.concat(["--image", image])
+    return cmd.concat([headline, body])
   }
 
   function notifyNewComment(s, fresh) {
     var n = Model.newCommentNotification(s, fresh)
-    var cmd = notifyCommand(n.headline, n.body)
+    var cmd = notifyCommand(n.headline, n.body, "normal", n.image)
     if (clickSendsToClaude && s.pid) cmd = cmd.concat(["--exec", "bash", binDir + "/fbs-process", String(s.pid)])
     else if (s.url) cmd = cmd.concat(["--exec", "omarchy-launch-browser", s.url])
     Quickshell.execDetached(cmd)

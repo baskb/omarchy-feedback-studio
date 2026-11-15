@@ -179,3 +179,41 @@ test('junk files are swept, and the output stays valid JSON', async () => {
     assert.equal(existsSync(noPid), false, 'entry without pid should have been removed');
   } finally { t.rm(); }
 });
+
+test('recent comments carry photo counts, and long or odd fields are clipped', async () => {
+  const comments = [
+    { id: 'c1', status: 'open', createdAt: '2026-10-01T10:00:03Z', text: '', authorName: 'A'.repeat(300),
+      attachments: [{ id: 'a1', file: 'attachments/c1/a1.jpg' }, { id: 'a2', file: 'attachments/c1/a2.png' }] },
+    { id: 'c2', status: 'open', createdAt: '2026-10-01T10:00:02Z', text: 'x'.repeat(500), authorName: 12345, attachments: 'junk' },
+    { id: 'c3', status: 'open', createdAt: '2026-10-01T10:00:01Z', text: 'plain', attachments: ['not-an-object'] },
+  ];
+  const server = createServer((req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    if (req.url.startsWith('/__feedback/api/comments')) res.end(JSON.stringify({ comments }));
+    else if (req.url.startsWith('/__feedback/api/agent-status')) res.end(JSON.stringify({ agent: { state: 'working', name: 'N'.repeat(100), note: 'n'.repeat(500) } }));
+    else { res.statusCode = 404; res.end('{}'); }
+  });
+  await new Promise((res) => server.listen(0, '127.0.0.1', res));
+  const { port } = server.address();
+  const t = tempData();
+  try {
+    mkdirSync(t.sessions, { recursive: true });
+    writeFileSync(path.join(t.sessions, `${process.pid}.json`), JSON.stringify(registryEntry(port, { dataDir: '/tmp/some/project/.feedback' })));
+    const [s] = await run(t.dir);
+    assert.equal(s.dataDir, '/tmp/some/project/.feedback');
+    const byId = Object.fromEntries(s.recent.map((c) => [c.id, c]));
+    assert.equal(byId.c1.photos, 2);
+    assert.equal(byId.c1.photo, 'attachments/c1/a1.jpg');
+    assert.equal(byId.c1.authorName.length, 60);
+    assert.equal(byId.c2.photos, 0);
+    assert.equal(byId.c2.text.length, 90);
+    assert.equal(byId.c2.authorName, '12345');
+    assert.equal(byId.c3.photos, 1);
+    assert.equal(byId.c3.photo, '');
+    assert.equal(s.agent.name.length, 40);
+    assert.equal(s.agent.note.length, 120);
+  } finally {
+    t.rm();
+    await new Promise((res) => server.close(res));
+  }
+});

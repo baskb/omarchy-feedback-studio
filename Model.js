@@ -35,6 +35,7 @@ function normalizeSession(s) {
     mode: str(s.mode) || "static",
     served: str(s.served),
     cwd: str(s.cwd),
+    dataDir: str(s.dataDir),
     url: str(s.url),
     phoneUrl: str(s.phoneUrl),
     tunnel: s.tunnel === true,
@@ -62,8 +63,26 @@ function normalizeRecent(c) {
     author: str(c.author),
     authorName: str(c.authorName),
     createdAt: str(c.createdAt),
-    text: str(c.text)
+    text: str(c.text),
+    photos: Math.max(0, Math.floor(num(c.photos))),
+    photo: str(c.photo)
   }
+}
+
+// The first photo of a comment as a local file for the notification, or "".
+// Feedback Studio stores photos as attachments/<comment id>/<photo id>.<ext>
+// under the session's data folder; anything else is not trusted as a path.
+function photoPath(s, c) {
+  var file = c && str(c.photo)
+  var dir = s && str(s.dataDir)
+  if (!file || !dir || dir.charAt(0) !== "/") return ""
+  if (!/^attachments\/[A-Za-z0-9_-]{1,64}\/[A-Za-z0-9_-]{1,64}\.(jpg|png|webp)$/.test(file)) return ""
+  if (/(^|\/)\.\.(\/|$)/.test(dir)) return ""
+  return dir.replace(/\/+$/, "") + "/" + file
+}
+
+function photoWord(n) {
+  return n === 1 ? "1 photo" : n + " photos"
 }
 
 function title(s) {
@@ -176,12 +195,14 @@ function newCommentNotification(s, fresh) {
   var n = fresh.length
   var headline = (n === 1 ? typeWord(fresh[0].type) : n + " new comments") + " · " + notifyText(title(s), 60)
   var first = fresh[0]
-  var quote = first.text ? "\u201c" + notifyText(first.text, 120) + "\u201d" : typeWord(first.type).toLowerCase() + " without text"
+  var photos = first.photos > 0 ? "\ud83d\udcf7 " + photoWord(first.photos) : ""
+  var quote = first.text ? "\u201c" + notifyText(first.text, 120) + "\u201d" + (photos ? " · " + photos : "")
+    : (photos || typeWord(first.type).toLowerCase() + " without text")
   var who = first.authorName ? notifyText(first.authorName, 40) + ": " : ""
   var body = who + quote
   if (n > 1) body += " and " + (n - 1) + " more"
   body += " · " + s.open + " open"
-  return { headline: headline, body: body }
+  return { headline: headline, body: body, image: photoPath(s, first) }
 }
 
 // True when the oldest unanswered question has waited longer than `minutes`
@@ -286,6 +307,7 @@ if (typeof module !== "undefined") {
     recentIds: recentIds,
     typeWord: typeWord,
     notifyText: notifyText,
+    photoPath: photoPath,
     newCommentNotification: newCommentNotification,
     questionIsStale: questionIsStale,
     staleNotification: staleNotification,

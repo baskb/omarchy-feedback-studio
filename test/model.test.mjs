@@ -188,3 +188,34 @@ test('every notification neutralises the comment, author and session title', () 
   }
   assert.ok(all[0].body.length < 300);
 });
+
+test('a photo-only comment says how many photos instead of "without text"', () => {
+  const s = Model.normalizeSession({ ...sample, dataDir: '/home/me/site/.feedback', open: 2 });
+  const n = Model.newCommentNotification(s, [{ id: 'c1', type: 'fix', author: 'reviewer', text: '', photos: 2, photo: 'attachments/c1/a_x1.jpg' }]);
+  assert.match(n.body, /📷 2 photos/);
+  assert.doesNotMatch(n.body, /without text/);
+  assert.equal(n.image, '/home/me/site/.feedback/attachments/c1/a_x1.jpg');
+  const withText = Model.newCommentNotification(s, [{ id: 'c2', type: 'fix', text: 'Logo too big', photos: 1, photo: 'attachments/c2/a2.png' }]);
+  assert.match(withText.body, /“Logo too big” · 📷 1 photo/);
+  const none = Model.newCommentNotification(s, [{ id: 'c3', type: 'fix', text: 'x' }]);
+  assert.equal(none.image, '');
+  assert.doesNotMatch(none.body, /📷/);
+});
+
+test('photoPath only trusts the attachments layout under an absolute data folder', () => {
+  const s = { dataDir: '/home/me/site/.feedback' };
+  for (const photo of ['../../.ssh/id_rsa', 'attachments/c1/../../x.png', '/etc/passwd', 'attachments/c1/a1.svg',
+    'attachments/c1/a1.png.sh', 'shots/c1.png', 'attachments/c 1/a1.png']) {
+    assert.equal(Model.photoPath(s, { photo: photo }), '', photo);
+  }
+  assert.equal(Model.photoPath({ dataDir: 'relative/.feedback' }, { photo: 'attachments/c1/a1.png' }), '');
+  assert.equal(Model.photoPath({ dataDir: '/x/../etc' }, { photo: 'attachments/c1/a1.png' }), '');
+  assert.equal(Model.photoPath(s, { photo: 'attachments/c1/a1.webp' }), '/home/me/site/.feedback/attachments/c1/a1.webp');
+});
+
+test('normalizeSession keeps the photo fields as safe types', () => {
+  const s = Model.normalizeSession({ ...sample, recent: [{ id: 'c1', photos: '3', photo: 42 }, { id: 'c2', photos: -1 }] });
+  assert.equal(s.recent[0].photos, 3);
+  assert.equal(s.recent[0].photo, '42');
+  assert.equal(s.recent[1].photos, 0);
+});
