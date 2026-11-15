@@ -1,5 +1,7 @@
 # Feedback Studio for Omarchy
 
+https://github.com/user-attachments/assets/d8f45935-74af-4853-8861-41ebcdef45aa
+
 [Feedback Studio](https://github.com/baskb/feedback-studio) overlays a local
 website you're building, or a Markdown file you're writing, so you can click
 any element, select any sentence, and say what should change, typed or spoken,
